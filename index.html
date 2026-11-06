@@ -1,0 +1,196 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wheel Canvas</title>
+<meta name="description" content="One on-chain canvas per day of Squeektoshi on the wheel, painted from SqueekCore round data on Ethereum Sepolia.">
+<!-- After you submit the Direct Submission form, Squeekchain gives you a page tag.
+     Paste it here exactly as given (the tag name and value come from the form). -->
+<!-- <meta name="squeekchain-project" content="PASTE-THE-VALUE-FROM-THE-FORM"> -->
+<style>
+  :root { --bg:#f6f4ef; --fg:#1b1a17; --muted:#6b675e; --card:#ffffff; --line:#ddd8cc; --accent:#c96a00; --btn-fg:#ffffff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0e0d0b; --fg:#f2efe8; --muted:#9a958a; --card:#171612; --line:#2a2823; --accent:#ffb347; --btn-fg:#14120d; }
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:16px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  main { max-width:960px; margin:0 auto; padding:24px 16px 64px; }
+  h1 { font-size:28px; margin:0 0 4px; letter-spacing:.02em; }
+  p { margin:8px 0; color:var(--muted); }
+  .bar { display:flex; flex-wrap:wrap; gap:12px; align-items:center; margin:20px 0; }
+  button { background:var(--accent); color:var(--btn-fg); border:0; padding:10px 16px; font:inherit; cursor:pointer; border-radius:6px; }
+  button:disabled { opacity:.5; cursor:default; }
+  .ghost { background:transparent; color:var(--fg); border:1px solid var(--line); }
+  #status { min-height:1.5em; color:var(--muted); word-break:break-word; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(200px, 1fr)); gap:16px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .card canvas { width:100%; height:auto; aspect-ratio:1; display:block; border-radius:4px; background:#0b0b0d; }
+  .card h2 { font-size:15px; margin:10px 0 2px; }
+  .stats { font-size:13px; color:var(--muted); min-height:2.6em; }
+  .card button { width:100%; margin-top:8px; }
+  footer { margin-top:40px; font-size:13px; color:var(--muted); }
+  a { color:var(--accent); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Wheel Canvas</h1>
+  <p>One on-chain canvas per day of Squeektoshi on the wheel. Each dot is one 10 minute round; bigger and brighter means more work. Painted from SqueekCore round data on Ethereum Sepolia.</p>
+  <p>Unofficial community project. Testnet only, nothing here has real value.</p>
+
+  <div class="bar">
+    <button id="connect">Connect wallet</button>
+    <button id="reload" class="ghost">Reload days</button>
+    <span id="status"></span>
+  </div>
+
+  <div id="days" class="grid"></div>
+
+  <footer>
+    <div>The first mint of a day reads that day from SqueekCore and stores it in the contract, so a canvas never changes afterwards. One mint per wallet per day.</div>
+    <div id="links"></div>
+  </footer>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/ethers@6.13.4/dist/ethers.umd.min.js"></script>
+<script>
+const CONFIG = {
+  contract: "PASTE_DEPLOYED_CONTRACT_ADDRESS",
+  core: "0x74665dAecA35A2303e767E76a2FF1FB6F93e119f",
+  chainId: 11155111,
+  rpc: "https://ethereum-sepolia-rpc.publicnode.com",
+  explorer: "https://eth-sepolia.blockscout.com",
+  maxDaysShown: 60
+};
+const ABI = [
+  "function mintableDays() view returns (uint256)",
+  "function summary(uint256 day) view returns (bool captured, uint32 total, uint16 peak, uint16 active)",
+  "function workOf(uint256 day) view returns (uint16[144])",
+  "function minted(uint256 day, address owner) view returns (bool)",
+  "function mint(uint256 day) returns (uint256)"
+];
+
+const $ = (id) => document.getElementById(id);
+const status = (msg) => { $("status").textContent = msg || ""; };
+let account = null;
+
+const readProvider = new ethers.JsonRpcProvider(CONFIG.rpc, CONFIG.chainId);
+const reader = () => new ethers.Contract(CONFIG.contract, ABI, readProvider);
+
+function link(text, href) {
+  const a = document.createElement("a");
+  a.textContent = text; a.href = href; a.target = "_blank"; a.rel = "noopener";
+  return a;
+}
+
+function renderLinks() {
+  const box = $("links");
+  box.textContent = "";
+  box.append("Contract: ", link(CONFIG.contract, CONFIG.explorer + "/address/" + CONFIG.contract),
+             " | SqueekCore: ", link(CONFIG.core, CONFIG.explorer + "/address/" + CONFIG.core));
+}
+
+// Same drawing rules as the contract's tokenURI SVG: 12 x 12 dots, size and brightness follow work.
+function draw(canvas, work, peak) {
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#0b0b0d"; ctx.fillRect(0, 0, 240, 240);
+  const p = peak === 0 ? 1 : peak;
+  for (let i = 0; i < 144; i++) {
+    const w = work ? Number(work[i]) : 0;
+    const pct = 8 + Math.floor((w * 92) / p);
+    const r = 3 + Math.floor((w * 6) / p);
+    ctx.fillStyle = "rgba(255,179,71," + Math.min(pct, 100) / 100 + ")";
+    ctx.beginPath();
+    ctx.arc(10 + (i % 12) * 20, 10 + Math.floor(i / 12) * 20, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+async function ensureChain() {
+  if (!window.ethereum) throw new Error("No wallet found. Open this page in a wallet browser or install one.");
+  const hex = "0x" + CONFIG.chainId.toString(16);
+  const current = await window.ethereum.request({ method: "eth_chainId" });
+  if (current !== hex) {
+    await window.ethereum.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+  }
+}
+
+async function connect() {
+  try {
+    await ensureChain();
+    const accounts = await window.ethereum.request({ method: "eth_requestAccounts" });
+    account = accounts[0];
+    $("connect").textContent = account.slice(0, 6) + "..." + account.slice(-4);
+    status("");
+    await loadDays();
+  } catch (e) { status(e.shortMessage || e.message); }
+}
+
+async function mintDay(day, button) {
+  try {
+    await ensureChain();
+    const provider = new ethers.BrowserProvider(window.ethereum);
+    const signer = await provider.getSigner();
+    const contract = new ethers.Contract(CONFIG.contract, ABI, signer);
+    button.disabled = true;
+    status("Confirm the transaction in your wallet.");
+    const tx = await contract.mint(day);
+    status("Waiting for confirmation...");
+    await tx.wait();
+    status("");
+    const done = document.createElement("span");
+    done.append("Minted day " + day + ". ", link("View transaction", CONFIG.explorer + "/tx/" + tx.hash));
+    $("status").textContent = ""; $("status").append(done);
+    await loadDays();
+  } catch (e) {
+    button.disabled = false;
+    status(e.shortMessage || e.message);
+  }
+}
+
+async function loadDays() {
+  const box = $("days");
+  if (CONFIG.contract.startsWith("PASTE")) { status("Set the deployed contract address in index.html first."); return; }
+  box.textContent = "";
+  status("Loading days...");
+  try {
+    const c = reader();
+    const total = Number(await c.mintableDays());
+    const first = Math.max(0, total - CONFIG.maxDaysShown);
+    const days = [];
+    for (let d = total - 1; d >= first; d--) days.push(d);
+    const cards = await Promise.all(days.map(async (d) => {
+      const s = await c.summary(d);
+      const captured = s[0];
+      const work = captured ? await c.workOf(d) : null;
+      const has = account ? await c.minted(d, account) : false;
+      return { d, captured, total: s[1], peak: Number(s[2]), active: s[3], work, has };
+    }));
+    for (const k of cards) {
+      const card = document.createElement("div"); card.className = "card";
+      const cv = document.createElement("canvas"); cv.width = 240; cv.height = 240;
+      draw(cv, k.work, k.peak);
+      const h = document.createElement("h2"); h.textContent = "Day " + k.d;
+      const st = document.createElement("div"); st.className = "stats";
+      st.textContent = k.captured
+        ? "Work " + k.total + ", active rounds " + k.active + ", peak " + k.peak
+        : "Not captured yet. The first mint captures it.";
+      const b = document.createElement("button");
+      b.textContent = k.has ? "Minted" : "Mint";
+      b.disabled = k.has;
+      b.addEventListener("click", () => account ? mintDay(k.d, b) : connect());
+      card.append(cv, h, st, b);
+      box.append(card);
+    }
+    status(total === 0 ? "No settled day yet." : "");
+  } catch (e) { status("Could not load: " + (e.shortMessage || e.message)); }
+}
+
+$("connect").addEventListener("click", connect);
+$("reload").addEventListener("click", loadDays);
+renderLinks();
+loadDays();
+</script>
+</body>
+</html>
